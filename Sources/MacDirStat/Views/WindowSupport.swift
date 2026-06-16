@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuartzCore
 
 /// Resolves the hosting `NSWindow` so we can configure transparency and resize
 /// it when side panels toggle. Place via `.background(WindowAccessor { ... })`.
@@ -55,7 +56,6 @@ func panelTargetFrame(_ window: NSWindow, side: PanelSide, showing: Bool, width:
 
     switch side {
     case .left:
-        // AppKit origin is bottom-left; extend leftward by moving origin.
         frame.origin.x -= delta
         frame.size.width += delta
     case .right:
@@ -69,4 +69,71 @@ func panelTargetFrame(_ window: NSWindow, side: PanelSide, showing: Bool, width:
     }
 
     return frame
+}
+
+/// Drives a panel toggle off a single timer so the window resize and the panel's
+/// visible width advance in lockstep — `window − panel` (the map) is constant
+/// every frame, with no second animation clock to drift against. `sidebarFraction`
+/// / `inspectorFraction` (0…1) feed the panels' clipped width in the view.
+@MainActor
+@Observable
+final class PanelResizeAnimator: NSObject {
+    var sidebarFraction: CGFloat = 1
+    var inspectorFraction: CGFloat = 1
+
+    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private weak var window: NSWindow?
+    @ObservationIgnored private var fromFrame: NSRect = .zero
+    @ObservationIgnored private var toFrame: NSRect = .zero
+    @ObservationIgnored private var fromFraction: CGFloat = 0
+    @ObservationIgnored private var toFraction: CGFloat = 0
+    @ObservationIgnored private var startTime: CFTimeInterval = 0
+    @ObservationIgnored private var duration: Double = 0.24
+    @ObservationIgnored private var side: PanelSide = .left
+
+    func animate(window: NSWindow, side: PanelSide, showing: Bool, width: CGFloat, duration: Double = 0.24) {
+        timer?.invalidate()
+        self.window = window
+        self.side = side
+        self.duration = duration
+        fromFrame = window.frame
+        toFrame = panelTargetFrame(window, side: side, showing: showing, width: width)
+        fromFraction = (side == .left) ? sidebarFraction : inspectorFraction
+        toFraction = showing ? 1 : 0
+        startTime = CACurrentMediaTime()
+
+        // Selector-based timer (no @Sendable closure) fires on the main runloop.
+        let t = Timer(timeInterval: 1.0 / 120.0, target: self, selector: #selector(tick), userInfo: nil, repeats: true)
+        RunLoop.main.add(t, forMode: .common) // keep animating during UI tracking
+        timer = t
+    }
+
+    func setInstant(side: PanelSide, showing: Bool) {
+        timer?.invalidate()
+        if side == .left { sidebarFraction = showing ? 1 : 0 } else { inspectorFraction = showing ? 1 : 0 }
+    }
+
+    @objc private func tick() {
+        guard let window else { timer?.invalidate(); return }
+        let progress = min(1.0, max(0.0, (CACurrentMediaTime() - startTime) / duration))
+        let e = progress < 0.5 ? 2 * progress * progress : 1 - pow(-2 * progress + 2, 2) / 2
+        window.setFrame(lerp(fromFrame, toFrame, e), display: true)
+        let fraction = fromFraction + (toFraction - fromFraction) * e
+        if side == .left { sidebarFraction = fraction } else { inspectorFraction = fraction }
+
+        if progress >= 1 {
+            timer?.invalidate()
+            window.setFrame(toFrame, display: true)
+            if side == .left { sidebarFraction = toFraction } else { inspectorFraction = toFraction }
+        }
+    }
+
+    private func lerp(_ a: NSRect, _ b: NSRect, _ t: CGFloat) -> NSRect {
+        NSRect(
+            x: a.minX + (b.minX - a.minX) * t,
+            y: a.minY + (b.minY - a.minY) * t,
+            width: a.width + (b.width - a.width) * t,
+            height: a.height + (b.height - a.height) * t
+        )
+    }
 }

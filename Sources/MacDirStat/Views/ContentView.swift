@@ -5,19 +5,32 @@ struct ContentView: View {
     @Environment(AppState.self) private var appState
     @State private var coordinator: ScanCoordinator?
     @State private var window: NSWindow?
+    @State private var resizer = PanelResizeAnimator()
 
     private static let sidebarWidth: CGFloat = 260
     private static let inspectorWidth: CGFloat = 300
 
     var body: some View {
         HStack(spacing: 0) {
-            if appState.showSidebar {
-                sidebarPanel.frame(width: Self.sidebarWidth)
+            // Content stays a fixed width inside a clipped box; the visible width
+            // = fullWidth × fraction, where `fraction` and the window frame are
+            // advanced by the same timer (PanelResizeAnimator) so the center keeps
+            // a constant width every frame.
+            if appState.showSidebar || resizer.sidebarFraction > 0.001 {
+                sidebarPanel
+                    .frame(width: Self.sidebarWidth)
+                    .frame(width: Self.sidebarWidth * resizer.sidebarFraction, alignment: .leading)
+                    .clipped()
             }
+
             centerPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if appState.showInspector {
-                inspectorPanel.frame(width: Self.inspectorWidth)
+
+            if appState.showInspector || resizer.inspectorFraction > 0.001 {
+                inspectorPanel
+                    .frame(width: Self.inspectorWidth)
+                    .frame(width: Self.inspectorWidth * resizer.inspectorFraction, alignment: .trailing)
+                    .clipped()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -208,13 +221,11 @@ struct ContentView: View {
     }
 
     private func togglePanel(side: PanelSide, width: CGFloat, showing: Bool) {
-        // Instant (no animation): the panel appears/disappears and the window
-        // grows/shrinks by the same width in one step, so the map stays put with
-        // no bouncing.
-        setPanel(side: side, showing: showing)
+        setPanel(side: side, showing: showing) // logical state (toolbar, persistence)
         if let window {
-            let frame = panelTargetFrame(window, side: side, showing: showing, width: width)
-            window.setFrame(frame, display: true, animate: false)
+            resizer.animate(window: window, side: side, showing: showing, width: width)
+        } else {
+            resizer.setInstant(side: side, showing: showing)
         }
     }
 
