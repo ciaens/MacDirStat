@@ -43,7 +43,10 @@ bundle: release
 	cp ".build/release/$(APP_NAME)" "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"
 	cp Packaging/Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
 	@[ -f Packaging/AppIcon.icns ] && cp Packaging/AppIcon.icns "$(APP_BUNDLE)/Contents/Resources/AppIcon.icns" || echo "note: no Packaging/AppIcon.icns — using generic icon"
-	@# Ad-hoc sign so macOS keeps a stable identity (e.g. for TCC disk-access grants)
+	@# Strip stale provenance/quarantine, then ad-hoc sign cleanly. (Rebuilding
+	@# a signed bundle in place can otherwise trip a transient "Invalid Page"
+	@# code-signing kill at launch.)
+	xattr -cr "$(APP_BUNDLE)"
 	codesign --force --sign - "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 

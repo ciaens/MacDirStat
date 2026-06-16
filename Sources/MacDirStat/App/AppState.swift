@@ -32,6 +32,7 @@ final class AppState {
     var selectedNode: FileNode?
     var breadcrumbs: [FileNode] = []
     var sizeMetric: SizeMetric = .fileSize
+    var showSidebar: Bool = true
     var showInspector: Bool = true
 
     var isScanning: Bool {
