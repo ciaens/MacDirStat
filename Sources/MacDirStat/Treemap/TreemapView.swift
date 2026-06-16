@@ -11,6 +11,8 @@ struct TreemapView: View {
     @State private var selectedItemID: Int?
     @State private var lastSize: CGSize = .zero
     @State private var layoutTask: Task<Void, Never>?
+    @State private var layoutInFlight = false
+    @State private var pendingLayoutSize: CGSize?
     @State private var zoomScale: CGFloat = 1.0
     @State private var panOffset: CGPoint = .zero
     @State private var showLabels: Bool = true
@@ -97,6 +99,9 @@ struct TreemapView: View {
                 )
             }
             .onChange(of: geometry.size) { _, newSize in
+                // Drop labels while the panel is being dragged — text layout is
+                // the most expensive thing the renderer does per frame.
+                suppressLabelsDuringInteraction()
                 recomputeLayout(size: newSize)
             }
             .onAppear {
@@ -105,10 +110,10 @@ struct TreemapView: View {
             .onChange(of: root.id) {
                 zoomScale = 1.0
                 panOffset = .zero
-                recomputeLayout(size: geometry.size)
+                forceRelayout(size: geometry.size)
             }
             .onChange(of: sizeMetric) {
-                recomputeLayout(size: geometry.size)
+                forceRelayout(size: geometry.size)
             }
         }
         .background(.black)
@@ -194,14 +199,44 @@ struct TreemapView: View {
         guard size.width > 0 && size.height > 0 else { return }
         lastSize = size
 
-        let metric = sizeMetric
+        // Coalesce: only one layout runs at a time. A request that arrives while
+        // a layout is in flight just records the latest size; the running task
+        // re-spawns for it on completion. This converges to the final size during
+        // a continuous resize drag without spawning a full-tree layout per frame.
+        guard !layoutInFlight else {
+            pendingLayoutSize = size
+            return
+        }
+        startLayout(size: size)
+    }
+
+    /// Force a fresh layout, discarding any in-flight one. Used when the root
+    /// or size metric changes (not just the bounds), so a stale in-flight task
+    /// captured against the old root/metric can't win.
+    private func forceRelayout(size: CGSize) {
         layoutTask?.cancel()
+        layoutInFlight = false
+        pendingLayoutSize = nil
+        recomputeLayout(size: size)
+    }
+
+    private func startLayout(size: CGSize) {
+        layoutInFlight = true
+        pendingLayoutSize = nil
+        let metric = sizeMetric
         layoutTask = Task.detached { [root] in
             let engine = TreemapLayoutEngine()
             let bounds = TreemapRect(x: 0, y: 0, width: Double(size.width), height: Double(size.height))
             let newItems = engine.layout(root: root, in: bounds, sizeMetric: metric)
             await MainActor.run {
+                // A cancelled task was superseded (root/metric changed) — drop it.
+                guard !Task.isCancelled else { return }
                 items = newItems
+                layoutInFlight = false
+                // Pick up the most recent size requested while we were laying out.
+                if let pending = pendingLayoutSize {
+                    recomputeLayout(size: pending)
+                }
             }
         }
     }

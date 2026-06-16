@@ -3,9 +3,6 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppState.self) private var appState
     @State private var coordinator: ScanCoordinator?
-    @FocusedValue(\.zoomInAction) private var zoomIn
-    @FocusedValue(\.zoomOutAction) private var zoomOut
-    @FocusedValue(\.resetZoomAction) private var resetZoom
 
     var body: some View {
         @Bindable var state = appState
@@ -80,14 +77,18 @@ struct ContentView: View {
             }
         }
         .inspector(isPresented: $state.showInspector) {
-            if let selected = appState.selectedNode {
-                DetailPanelView(node: selected)
-                    .inspectorColumnWidth(min: 250, ideal: 300, max: 400)
-            } else {
-                Text("Select an item to view details")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                if let selected = appState.selectedNode {
+                    DetailPanelView(node: selected)
+                } else {
+                    ContentUnavailableView(
+                        "No Selection",
+                        systemImage: "list.bullet.rectangle",
+                        description: Text("Select a file or folder to view its details.")
+                    )
+                }
             }
+            .inspectorColumnWidth(min: 250, ideal: 300, max: 400)
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -111,27 +112,6 @@ struct ContentView: View {
                         appState.scanStatus = .completed
                     }
                 }
-
-                Button {
-                    zoomIn?()
-                } label: {
-                    Label("Zoom In", systemImage: "plus.magnifyingglass")
-                }
-                .disabled(zoomIn == nil)
-
-                Button {
-                    zoomOut?()
-                } label: {
-                    Label("Zoom Out", systemImage: "minus.magnifyingglass")
-                }
-                .disabled(zoomOut == nil)
-
-                Button {
-                    resetZoom?()
-                } label: {
-                    Label("Reset Zoom", systemImage: "1.magnifyingglass")
-                }
-                .disabled(resetZoom == nil)
 
                 Button {
                     appState.showInspector.toggle()

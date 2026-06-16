@@ -120,24 +120,35 @@ struct TreemapLayoutEngine: Sendable {
 
         while index < sizes.count {
             let shortSide = remaining.minSide
+            let s2 = shortSide * shortSide
 
-            // Find the optimal row
-            var row: [Int] = [index]
+            // Grow the row while the worst aspect ratio keeps improving. The
+            // worst ratio of a row depends only on its sum, min, and max
+            // element (the per-element ratio is monotonic in element size), so
+            // we track those incrementally — O(1) per step instead of
+            // rescanning the whole row, making the layout O(n) overall.
+            let rowStart = index
+            var rowEnd = index // inclusive
             var rowSum = sizes[index]
-            var bestWorst = worstAspectRatio(row: [sizes[index]], totalArea: rowSum, shortSide: shortSide)
+            var rowMin = sizes[index]
+            var rowMax = sizes[index]
+            var bestWorst = worstAspectRatio(s2: s2, sum: rowSum, minSize: rowMin, maxSize: rowMax)
 
             var next = index + 1
             while next < sizes.count {
-                let newSum = rowSum + sizes[next]
-                var rowSizes = row.map { sizes[$0] }
-                rowSizes.append(sizes[next])
-                let newWorst = worstAspectRatio(row: rowSizes, totalArea: newSum, shortSide: shortSide)
+                let v = sizes[next]
+                let newSum = rowSum + v
+                let newMin = min(rowMin, v)
+                let newMax = max(rowMax, v)
+                let newWorst = worstAspectRatio(s2: s2, sum: newSum, minSize: newMin, maxSize: newMax)
                 if newWorst > bestWorst {
                     break
                 }
                 bestWorst = newWorst
-                row.append(next)
                 rowSum = newSum
+                rowMin = newMin
+                rowMax = newMax
+                rowEnd = next
                 next += 1
             }
 
@@ -148,7 +159,7 @@ struct TreemapLayoutEngine: Sendable {
             if isHorizontal {
                 let rowWidth = remaining.width * rowFraction
                 var yOffset = remaining.y
-                for idx in row {
+                for idx in rowStart...rowEnd {
                     let itemHeight = (sizes[idx] / rowSum) * remaining.height
                     rects[idx] = TreemapRect(
                         x: remaining.x,
@@ -167,7 +178,7 @@ struct TreemapLayoutEngine: Sendable {
             } else {
                 let rowHeight = remaining.height * rowFraction
                 var xOffset = remaining.x
-                for idx in row {
+                for idx in rowStart...rowEnd {
                     let itemWidth = (sizes[idx] / rowSum) * remaining.width
                     rects[idx] = TreemapRect(
                         x: xOffset,
@@ -191,19 +202,14 @@ struct TreemapLayoutEngine: Sendable {
         return rects
     }
 
-    private func worstAspectRatio(row: [Double], totalArea: Double, shortSide: Double) -> Double {
-        guard shortSide > 0 && totalArea > 0 else { return Double.infinity }
-        let s2 = shortSide * shortSide
-        var worst: Double = 0
-        for size in row {
-            guard size > 0 else { continue }
-            let ratio = max(
-                (s2 * size) / (totalArea * totalArea),
-                (totalArea * totalArea) / (s2 * size)
-            )
-            worst = max(worst, ratio)
-        }
-        return worst
+    /// Worst (largest) aspect ratio of a row, given the side it's laid against.
+    /// Equivalent to the per-element max of `max(s²·size/S², S²/(s²·size))`:
+    /// the first term grows with size (peaks at `maxSize`), the second shrinks
+    /// (peaks at `minSize`), so only the row's extremes and sum matter.
+    private func worstAspectRatio(s2: Double, sum: Double, minSize: Double, maxSize: Double) -> Double {
+        guard s2 > 0 && sum > 0 && minSize > 0 else { return Double.infinity }
+        let sum2 = sum * sum
+        return max((s2 * maxSize) / sum2, sum2 / (s2 * minSize))
     }
 }
 

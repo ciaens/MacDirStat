@@ -25,14 +25,23 @@ private final class ScanState: Sendable {
     private let lock = OSAllocatedUnfairLock(initialState: State())
     let rootDevice: dev_t
 
+    /// Absolute paths we must not descend into. These are File Provider / cloud
+    /// roots (Nextcloud, Google Drive, iCloud Drive, etc.) whose contents are
+    /// dataless placeholders: enumerating an un-cached subfolder blocks on a
+    /// network round-trip — potentially forever if the provider is slow or
+    /// offline — which would otherwise stall the whole scan. They also don't
+    /// represent real local disk usage.
+    let excludedPaths: Set<String>
+
     private struct State {
         var fileCount: Int = 0
         var byteCount: Int64 = 0
         var seenInodes = Set<UInt64>()
     }
 
-    init(rootDevice: dev_t) {
+    init(rootDevice: dev_t, excludedPaths: Set<String>) {
         self.rootDevice = rootDevice
+        self.excludedPaths = excludedPaths
     }
 
     func addFile(inode: UInt64, size: Int64) -> (isNew: Bool, fileCount: Int, byteCount: Int64) {
@@ -69,7 +78,7 @@ private func performParallelScan(rootPath: String, continuation: AsyncStream<Sca
         return
     }
 
-    let state = ScanState(rootDevice: rootStat.st_dev)
+    let state = ScanState(rootDevice: rootStat.st_dev, excludedPaths: cloudExcludedPaths())
 
     if let root = await scanDirectory(
         atPath: rootPath,
@@ -152,6 +161,8 @@ private func scanDirectory(
 
         if mode == S_IFDIR {
             let childPath = path.last == "/" ? path + entryName : path + "/" + entryName
+            // Don't descend into cloud / File Provider roots (would block).
+            if state.excludedPaths.contains(childPath) { continue }
             subdirPaths.append((childPath, entryName))
         } else if mode == S_IFREG {
             let fileSize = Int64(childStat.st_size)
@@ -221,6 +232,18 @@ private func scanDirectory(
     }
 
     return dirNode
+}
+
+// Cloud / File Provider roots to skip. macOS mounts all third-party File
+// Provider domains under ~/Library/CloudStorage, and iCloud Drive under
+// ~/Library/Mobile Documents. Descending into their dataless contents blocks
+// on the network, so we treat them like cross-device boundaries.
+private func cloudExcludedPaths() -> Set<String> {
+    let home = NSHomeDirectory()
+    return [
+        home + "/Library/CloudStorage",
+        home + "/Library/Mobile Documents",
+    ]
 }
 
 // Fast extension extraction without NSString bridging
