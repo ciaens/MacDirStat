@@ -71,35 +71,30 @@ func panelTargetFrame(_ window: NSWindow, side: PanelSide, showing: Bool, width:
     return frame
 }
 
-/// Drives a panel toggle off a single timer so the window resize and the panel's
-/// visible width advance in lockstep — `window − panel` (the map) is constant
-/// every frame, with no second animation clock to drift against. `sidebarFraction`
-/// / `inspectorFraction` (0…1) feed the panels' clipped width in the view.
+/// Animates ONLY the window frame off a timer. The panel width is left to
+/// SwiftUI layout: during the toggle the center (map) is pinned to a fixed width
+/// and the toggling panel is flexible, so each window-frame step produces a
+/// single layout pass where the panel absorbs the whole size change and the map
+/// stays constant (no whipsaw, no treemap recompute). Calls `completion` at the
+/// end so the view can unpin.
 @MainActor
-@Observable
 final class PanelResizeAnimator: NSObject {
-    var sidebarFraction: CGFloat = 1
-    var inspectorFraction: CGFloat = 1
+    private var timer: Timer?
+    private weak var window: NSWindow?
+    private var fromFrame: NSRect = .zero
+    private var toFrame: NSRect = .zero
+    private var startTime: CFTimeInterval = 0
+    private var duration: Double = 0.24
+    private var completion: (() -> Void)?
 
-    @ObservationIgnored private var timer: Timer?
-    @ObservationIgnored private weak var window: NSWindow?
-    @ObservationIgnored private var fromFrame: NSRect = .zero
-    @ObservationIgnored private var toFrame: NSRect = .zero
-    @ObservationIgnored private var fromFraction: CGFloat = 0
-    @ObservationIgnored private var toFraction: CGFloat = 0
-    @ObservationIgnored private var startTime: CFTimeInterval = 0
-    @ObservationIgnored private var duration: Double = 0.24
-    @ObservationIgnored private var side: PanelSide = .left
-
-    func animate(window: NSWindow, side: PanelSide, showing: Bool, width: CGFloat, duration: Double = 0.24) {
+    func animate(window: NSWindow, side: PanelSide, showing: Bool, width: CGFloat,
+                 duration: Double = 0.24, completion: @escaping () -> Void) {
         timer?.invalidate()
         self.window = window
-        self.side = side
         self.duration = duration
+        self.completion = completion
         fromFrame = window.frame
         toFrame = panelTargetFrame(window, side: side, showing: showing, width: width)
-        fromFraction = (side == .left) ? sidebarFraction : inspectorFraction
-        toFraction = showing ? 1 : 0
         startTime = CACurrentMediaTime()
 
         // Selector-based timer (no @Sendable closure) fires on the main runloop.
@@ -108,24 +103,23 @@ final class PanelResizeAnimator: NSObject {
         timer = t
     }
 
-    func setInstant(side: PanelSide, showing: Bool) {
-        timer?.invalidate()
-        if side == .left { sidebarFraction = showing ? 1 : 0 } else { inspectorFraction = showing ? 1 : 0 }
-    }
-
     @objc private func tick() {
-        guard let window else { timer?.invalidate(); return }
+        guard let window else { finish(); return }
         let progress = min(1.0, max(0.0, (CACurrentMediaTime() - startTime) / duration))
         let e = progress < 0.5 ? 2 * progress * progress : 1 - pow(-2 * progress + 2, 2) / 2
         window.setFrame(lerp(fromFrame, toFrame, e), display: true)
-        let fraction = fromFraction + (toFraction - fromFraction) * e
-        if side == .left { sidebarFraction = fraction } else { inspectorFraction = fraction }
-
         if progress >= 1 {
-            timer?.invalidate()
             window.setFrame(toFrame, display: true)
-            if side == .left { sidebarFraction = toFraction } else { inspectorFraction = toFraction }
+            finish()
         }
+    }
+
+    private func finish() {
+        timer?.invalidate()
+        timer = nil
+        let c = completion
+        completion = nil
+        c?()
     }
 
     private func lerp(_ a: NSRect, _ b: NSRect, _ t: CGFloat) -> NSRect {
@@ -135,5 +129,36 @@ final class PanelResizeAnimator: NSObject {
             width: a.width + (b.width - a.width) * t,
             height: a.height + (b.height - a.height) * t
         )
+    }
+}
+
+/// Sizes a side panel: flexible (fills leftover up to `fullWidth`) while its
+/// window edge is being animated, otherwise a fixed `fullWidth`/0.
+struct PanelWidth: ViewModifier {
+    let flexible: Bool
+    let fullWidth: CGFloat
+    let shown: Bool
+    let alignment: Alignment
+
+    func body(content: Content) -> some View {
+        if flexible {
+            content.frame(maxWidth: fullWidth, alignment: alignment)
+        } else {
+            content.frame(width: shown ? fullWidth : 0, alignment: alignment)
+        }
+    }
+}
+
+/// Pins the center to a fixed width during a panel toggle (so the map can't
+/// reflow); flexible otherwise.
+struct CenterWidth: ViewModifier {
+    let pinned: CGFloat?
+
+    func body(content: Content) -> some View {
+        if let pinned {
+            content.frame(width: pinned, alignment: .center)
+        } else {
+            content.frame(maxWidth: .infinity)
+        }
     }
 }

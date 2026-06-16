@@ -98,7 +98,8 @@ struct TreemapView: View {
                     }
                 )
             }
-            .onChange(of: geometry.size) { _, newSize in
+            .onChange(of: geometry.size) { oldSize, newSize in
+                print("[treemap] size \(oldSize.width)x\(oldSize.height) -> \(newSize.width)x\(newSize.height)")
                 // Drop labels while the panel is being dragged — text layout is
                 // the most expensive thing the renderer does per frame.
                 suppressLabelsDuringInteraction()

@@ -33,19 +33,19 @@ If you've used **WinDirStat**, **WizTree**, or **TreeSize** on Windows and want 
 
 ### Build from source
 
-Requires macOS 15.0+ and Swift 6.
+Requires macOS 15.0+ and Xcode 16+.
 
 ```bash
 git clone https://github.com/phalladar/MacDirStat.git
 cd macdirstat
-swift build -c release
-swift run MacDirStat
+make release      # build (optimized)
+make run          # build & run
 ```
 
 Or open in Xcode:
 
 ```bash
-open Package.swift
+make xcode        # == open Package.swift
 ```
 
 Zero external dependencies. Pure Swift Package Manager project.

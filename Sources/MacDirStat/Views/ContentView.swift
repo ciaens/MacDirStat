@@ -6,30 +6,37 @@ struct ContentView: View {
     @State private var coordinator: ScanCoordinator?
     @State private var window: NSWindow?
     @State private var resizer = PanelResizeAnimator()
+    @State private var resizingSide: PanelSide?
+    @State private var mapWidth: CGFloat = 0
 
     private static let sidebarWidth: CGFloat = 260
     private static let inspectorWidth: CGFloat = 300
 
     var body: some View {
         HStack(spacing: 0) {
-            // Content stays a fixed width inside a clipped box; the visible width
-            // = fullWidth × fraction, where `fraction` and the window frame are
-            // advanced by the same timer (PanelResizeAnimator) so the center keeps
-            // a constant width every frame.
-            if appState.showSidebar || resizer.sidebarFraction > 0.001 {
+            // During a toggle the center is pinned and the toggling panel is
+            // flexible (clipped), so the window-frame animation drives the panel
+            // width in a single layout pass and the map never reflows.
+            if appState.showSidebar || resizingSide == .left {
                 sidebarPanel
                     .frame(width: Self.sidebarWidth)
-                    .frame(width: Self.sidebarWidth * resizer.sidebarFraction, alignment: .leading)
+                    .modifier(PanelWidth(flexible: resizingSide == .left, fullWidth: Self.sidebarWidth,
+                                         shown: appState.showSidebar, alignment: .leading))
                     .clipped()
             }
 
             centerPane
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .modifier(CenterWidth(pinned: resizingSide == nil ? nil : mapWidth))
+                .frame(maxHeight: .infinity)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
+                    if resizingSide == nil { mapWidth = newWidth }
+                }
 
-            if appState.showInspector || resizer.inspectorFraction > 0.001 {
+            if appState.showInspector || resizingSide == .right {
                 inspectorPanel
                     .frame(width: Self.inspectorWidth)
-                    .frame(width: Self.inspectorWidth * resizer.inspectorFraction, alignment: .trailing)
+                    .modifier(PanelWidth(flexible: resizingSide == .right, fullWidth: Self.inspectorWidth,
+                                         shown: appState.showInspector, alignment: .trailing))
                     .clipped()
             }
         }
@@ -222,10 +229,11 @@ struct ContentView: View {
 
     private func togglePanel(side: PanelSide, width: CGFloat, showing: Bool) {
         setPanel(side: side, showing: showing) // logical state (toolbar, persistence)
-        if let window {
-            resizer.animate(window: window, side: side, showing: showing, width: width)
-        } else {
-            resizer.setInstant(side: side, showing: showing)
+        guard let window else { return }
+        // Pin the map and let the toggling panel flex while the window animates.
+        resizingSide = side
+        resizer.animate(window: window, side: side, showing: showing, width: width) {
+            resizingSide = nil
         }
     }
 
