@@ -4,13 +4,16 @@ struct DirectoryTreeView: View {
     let root: FileNode
     @Binding var selectedNode: FileNode?
     let sizeMetric: SizeMetric
+    /// Called when a folder is picked in the tree, so the map can retarget to it.
+    var onDrill: (FileNode) -> Void = { _ in }
 
     var body: some View {
         List(selection: Binding(
             get: { selectedNode?.id },
             set: { id in
-                if let id {
-                    selectedNode = findNode(id: id, in: root)
+                if let id, let node = findNode(id: id, in: root) {
+                    selectedNode = node
+                    onDrill(node)
                 }
             }
         )) {
@@ -19,6 +22,7 @@ struct DirectoryTreeView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden) // let the panel's glass show through
     }
 
     private func findNode(id: UInt64, in node: FileNode) -> FileNode? {

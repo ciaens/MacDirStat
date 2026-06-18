@@ -1,163 +1,247 @@
 import SwiftUI
+import AppKit
 
 struct ContentView: View {
     @Environment(AppState.self) private var appState
     @State private var coordinator: ScanCoordinator?
-    @FocusedValue(\.zoomInAction) private var zoomIn
-    @FocusedValue(\.zoomOutAction) private var zoomOut
-    @FocusedValue(\.resetZoomAction) private var resetZoom
+    @State private var window: NSWindow?
+    @State private var resizer = PanelResizeAnimator()
+    @State private var resizingSide: PanelSide?
+    @State private var mapWidth: CGFloat = 0
+
+    private static let sidebarWidth: CGFloat = 260
+    private static let inspectorWidth: CGFloat = 300
 
     var body: some View {
-        @Bindable var state = appState
-
-        NavigationSplitView {
-            if let root = appState.rootNode {
-                DirectoryTreeView(root: root, selectedNode: $state.selectedNode, sizeMetric: appState.sizeMetric)
-                    .navigationSplitViewColumnWidth(min: 200, ideal: 260, max: 400)
-            } else {
-                Text("No data")
-                    .foregroundStyle(.secondary)
-                    .frame(maxHeight: .infinity)
+        HStack(spacing: 0) {
+            // During a toggle the center is pinned and the toggling panel is
+            // flexible (clipped), so the window-frame animation drives the panel
+            // width in a single layout pass and the map never reflows.
+            if appState.showSidebar || resizingSide == .left {
+                sidebarPanel
+                    .frame(width: Self.sidebarWidth)
+                    .modifier(PanelWidth(flexible: resizingSide == .left, fullWidth: Self.sidebarWidth,
+                                         shown: appState.showSidebar, alignment: .leading))
+                    .clipped()
             }
-        } detail: {
-            ZStack {
-                switch appState.scanStatus {
-                case .idle:
-                    WelcomeView { path in
-                        coordinator?.startScan(path: path)
-                    }
-                    .transition(.opacity)
 
-                case let .scanning(fileCount, byteCount, currentPath):
-                    ScanProgressView(
-                        fileCount: fileCount,
-                        byteCount: byteCount,
-                        currentPath: currentPath
-                    ) {
-                        coordinator?.cancel()
-                        appState.scanStatus = .idle
-                    }
-
-                case .completed:
-                    if let treemapRoot = appState.treemapRoot {
-                        VStack(spacing: 0) {
-                            // Breadcrumb bar
-                            BreadcrumbBar(
-                                breadcrumbs: appState.breadcrumbs,
-                                onNavigate: { node in
-                                    appState.navigateTo(breadcrumb: node)
-                                }
-                            )
-
-                            // Treemap
-                            TreemapView(
-                                root: treemapRoot,
-                                onSelect: { node in
-                                    appState.selectedNode = node
-                                },
-                                onDrillDown: { node in
-                                    appState.drillDown(to: node)
-                                },
-                                sizeMetric: appState.sizeMetric
-                            )
-                        }
-                    }
-
-                case let .error(message):
-                    VStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.largeTitle)
-                            .foregroundStyle(.red)
-                        Text("Scan Error")
-                            .font(.title2.bold())
-                        Text(message)
-                            .foregroundStyle(.secondary)
-                        Button("Try Again") {
-                            appState.reset()
-                        }
-                    }
+            centerPane
+                .modifier(CenterWidth(pinned: resizingSide == nil ? nil : mapWidth))
+                .frame(maxHeight: .infinity)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
+                    if resizingSide == nil { mapWidth = newWidth }
                 }
+
+            if appState.showInspector || resizingSide == .right {
+                inspectorPanel
+                    .frame(width: Self.inspectorWidth)
+                    .modifier(PanelWidth(flexible: resizingSide == .right, fullWidth: Self.inspectorWidth,
+                                         shown: appState.showInspector, alignment: .trailing))
+                    .clipped()
             }
         }
-        .inspector(isPresented: $state.showInspector) {
-            if let selected = appState.selectedNode {
-                DetailPanelView(node: selected)
-                    .inspectorColumnWidth(min: 250, ideal: 300, max: 400)
-            } else {
-                Text("Select an item to view details")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    if let path = appState.rootNode?.path {
-                        coordinator?.startScan(path: path)
-                    }
-                } label: {
-                    Label("Rescan", systemImage: "arrow.clockwise")
-                }
-                .disabled(appState.rootNode == nil)
-
-                Button {
-                    selectAndScan()
-                } label: {
-                    Label("Scan Drive", systemImage: "internaldrive.fill")
-                }
-
-                SizeMetricPicker(sizeMetric: $state.sizeMetric) {
-                    if appState.scanStatus == .idle, appState.rootNode != nil {
-                        appState.scanStatus = .completed
-                    }
-                }
-
-                Button {
-                    zoomIn?()
-                } label: {
-                    Label("Zoom In", systemImage: "plus.magnifyingglass")
-                }
-                .disabled(zoomIn == nil)
-
-                Button {
-                    zoomOut?()
-                } label: {
-                    Label("Zoom Out", systemImage: "minus.magnifyingglass")
-                }
-                .disabled(zoomOut == nil)
-
-                Button {
-                    resetZoom?()
-                } label: {
-                    Label("Reset Zoom", systemImage: "1.magnifyingglass")
-                }
-                .disabled(resetZoom == nil)
-
-                Button {
-                    appState.showInspector.toggle()
-                } label: {
-                    Label("Inspector", systemImage: "sidebar.right")
-                }
-            }
-
-            ToolbarItem(placement: .navigation) {
-                if appState.treemapRoot?.parent != nil {
-                    Button {
-                        appState.navigateUp()
-                    } label: {
-                        Label("Back", systemImage: "chevron.left")
-                    }
-                }
-            }
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WindowAccessor { configureWindow($0) })
+        .toolbar { toolbarContent }
         .onAppear {
             if coordinator == nil {
                 coordinator = ScanCoordinator(appState: appState)
             }
         }
-        .focusedSceneValue(\.scanAction, {
-            selectAndScan()
-        })
+        .focusedSceneValue(\.scanAction, { selectAndScan() })
+    }
+
+    // MARK: - Side panels (frosted glass over the desktop)
+
+    @ViewBuilder
+    private var sidebarPanel: some View {
+        @Bindable var state = appState
+        Group {
+            if let root = appState.rootNode {
+                DirectoryTreeView(
+                    root: root,
+                    selectedNode: $state.selectedNode,
+                    sizeMetric: appState.sizeMetric,
+                    onDrill: { node in appState.drillDown(to: node) }
+                )
+            } else {
+                Text("No data")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(VisualEffectView(material: .sidebar))
+    }
+
+    @ViewBuilder
+    private var inspectorPanel: some View {
+        Group {
+            if let selected = appState.selectedNode {
+                DetailPanelView(node: selected)
+            } else {
+                ContentUnavailableView(
+                    "No Selection",
+                    systemImage: "list.bullet.rectangle",
+                    description: Text("Select a file or folder to view its details.")
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(VisualEffectView(material: .sidebar))
+    }
+
+    // MARK: - Center pane (opaque; the map never reflows on panel toggle)
+
+    @ViewBuilder
+    private var centerPane: some View {
+        ZStack {
+            switch appState.scanStatus {
+            case .idle:
+                WelcomeView { path in
+                    coordinator?.startScan(path: path)
+                }
+                .transition(.opacity)
+
+            case let .scanning(fileCount, byteCount, currentPath):
+                ScanProgressView(
+                    fileCount: fileCount,
+                    byteCount: byteCount,
+                    currentPath: currentPath
+                ) {
+                    coordinator?.cancel()
+                    appState.scanStatus = .idle
+                }
+
+            case .completed:
+                if let treemapRoot = appState.treemapRoot {
+                    VStack(spacing: 0) {
+                        BreadcrumbBar(
+                            breadcrumbs: appState.breadcrumbs,
+                            onNavigate: { node in appState.navigateTo(breadcrumb: node) }
+                        )
+                        TreemapView(
+                            root: treemapRoot,
+                            onSelect: { node in appState.selectedNode = node },
+                            onDrillDown: { node in appState.drillDown(to: node) },
+                            sizeMetric: appState.sizeMetric
+                        )
+                    }
+                }
+
+            case let .error(message):
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.largeTitle)
+                        .foregroundStyle(.red)
+                    Text("Scan Error")
+                        .font(.title2.bold())
+                    Text(message)
+                        .foregroundStyle(.secondary)
+                    Button("Try Again") {
+                        appState.reset()
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    // MARK: - Toolbar
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button {
+                toggleSidebar()
+            } label: {
+                Label("Toggle Sidebar", systemImage: "sidebar.left")
+            }
+        }
+
+        ToolbarItem(placement: .navigation) {
+            if appState.treemapRoot?.parent != nil {
+                Button {
+                    appState.navigateUp()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
+            }
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                if let path = appState.rootNode?.path {
+                    coordinator?.startScan(path: path)
+                }
+            } label: {
+                Label("Rescan", systemImage: "arrow.clockwise")
+            }
+            .disabled(appState.rootNode == nil)
+
+            Button {
+                selectAndScan()
+            } label: {
+                Label("Scan Drive", systemImage: "internaldrive.fill")
+            }
+
+            SizeMetricPicker(sizeMetric: sizeMetricBinding) {
+                if appState.scanStatus == .idle, appState.rootNode != nil {
+                    appState.scanStatus = .completed
+                }
+            }
+
+            Button {
+                toggleInspector()
+            } label: {
+                Label("Toggle Inspector", systemImage: "sidebar.right")
+            }
+        }
+    }
+
+    private var sizeMetricBinding: Binding<SizeMetric> {
+        Binding(get: { appState.sizeMetric }, set: { appState.sizeMetric = $0 })
+    }
+
+    // MARK: - Actions
+
+    private func configureWindow(_ resolved: NSWindow) {
+        guard window == nil else { return }
+        DispatchQueue.main.async {
+            guard window == nil else { return }
+            window = resolved
+            // Non-opaque so the behind-window panels reveal the desktop. We
+            // deliberately leave the background color and titlebar untouched so
+            // the toolbar/title stay normal (clearing the bg made them
+            // transparent).
+            resolved.isOpaque = false
+        }
+    }
+
+    private func toggleSidebar() {
+        togglePanel(side: .left, width: Self.sidebarWidth, showing: !appState.showSidebar)
+    }
+
+    private func toggleInspector() {
+        togglePanel(side: .right, width: Self.inspectorWidth, showing: !appState.showInspector)
+    }
+
+    private func togglePanel(side: PanelSide, width: CGFloat, showing: Bool) {
+        setPanel(side: side, showing: showing) // logical state (toolbar, persistence)
+        guard let window else { return }
+        // Pin the map and let the toggling panel flex while the window animates.
+        resizingSide = side
+        resizer.animate(window: window, side: side, showing: showing, width: width) {
+            resizingSide = nil
+        }
+    }
+
+    private func setPanel(side: PanelSide, showing: Bool) {
+        switch side {
+        case .left: appState.showSidebar = showing
+        case .right: appState.showInspector = showing
+        }
     }
 
     private func selectAndScan() {
